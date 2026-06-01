@@ -1,0 +1,25 @@
+# VisionAST requirements
+# Install with:  pip install -r requirements.txt
+
+# Core deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer vision & image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Data science
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# Visualisation
+matplotlib>=3.7.0
+
+# For reading Dryad .docx tables
+python-docx>=1.1.0
+
+# Utilities
+tqdm>=4.65.0
