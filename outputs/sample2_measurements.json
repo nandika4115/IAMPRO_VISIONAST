@@ -1,0 +1,21 @@
+{
+  "status": "OK",
+  "guideline": "EUCAST",
+  "disc_count": 1,
+  "warnings": [
+    {
+      "code": "TILTED",
+      "message": "Plate appears angled (tilt 0.52).",
+      "instruction": "Hold camera directly above the plate, looking straight down.",
+      "severity": "warning"
+    }
+  ],
+  "results": [
+    {
+      "disc_index": 1,
+      "antibiotic": "DEFAULT",
+      "zone_diameter_mm": 45.19,
+      "classification": "S"
+    }
+  ]
+}

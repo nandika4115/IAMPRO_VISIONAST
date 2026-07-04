@@ -1,0 +1,17 @@
+{
+  "status": "REJECTED",
+  "issues": [
+    {
+      "code": "BLURRY",
+      "message": "Image is blurry (score 17.6, need \u226580).",
+      "instruction": "Hold camera steady and wait for autofocus to lock.",
+      "severity": "error"
+    },
+    {
+      "code": "TILTED",
+      "message": "Plate appears angled (tilt 0.20).",
+      "instruction": "Hold camera directly above the plate, looking straight down.",
+      "severity": "warning"
+    }
+  ]
+}
