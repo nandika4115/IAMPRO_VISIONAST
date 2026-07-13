@@ -1,0 +1,41 @@
+{
+  "status": "OK",
+  "guideline": "EUCAST",
+  "disc_count": 4,
+  "warnings": [
+    {
+      "code": "TILTED",
+      "message": "Plate appears angled (tilt 0.25).",
+      "instruction": "Hold camera directly above the plate, looking straight down.",
+      "severity": "warning"
+    }
+  ],
+  "results": [
+    {
+      "disc_index": 1,
+      "antibiotic": "DEFAULT",
+      "zone_diameter_mm": 44.16,
+      "classification": "S"
+    },
+    {
+      "disc_index": 2,
+      "antibiotic": "DEFAULT",
+      "zone_diameter_mm": 65.28,
+      "classification": "S"
+    },
+    {
+      "disc_index": 3,
+      "antibiotic": "DEFAULT",
+      "zone_diameter_mm": 6.0,
+      "classification": "R",
+      "note": "No inhibition zone detected"
+    },
+    {
+      "disc_index": 4,
+      "antibiotic": "DEFAULT",
+      "zone_diameter_mm": 6.0,
+      "classification": "R",
+      "note": "No inhibition zone detected"
+    }
+  ]
+}
