@@ -1,0 +1,22 @@
+{
+  "n_images_evaluated": 56,
+  "n_disc_comparisons": 845,
+  "tolerance_mm": 3.0,
+  "essential_agreement_pct": 19.29,
+  "categorical_agreement_pct": 45.44,
+  "mae_mm": 12.151,
+  "rmse_mm": 14.831,
+  "pearson_r": 0.111,
+  "no_zone_detected_rate_pct": 36.57,
+  "major_error_rate_pct": 64.04,
+  "very_major_error_rate_pct": 25.17,
+  "n_true_S": 520,
+  "n_true_R": 294,
+  "n_ME": 333,
+  "n_VME": 74,
+  "mean_disc_detection_recall_pct": 94.42,
+  "quality_gate_status_counts": {
+    "WARNED": 53,
+    "OK": 3
+  }
+}

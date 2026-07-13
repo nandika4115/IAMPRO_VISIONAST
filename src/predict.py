@@ -288,9 +288,17 @@ def classify(zone_mm, disc_label, guideline="EUCAST"):
 # U-NET SEGMENTATION  — with mask inversion fix
 # ══════════════════════════════════════════════════════════════════════════════
 
-def segment(model, img_rgb, img_size, device):
+def segment(model, img_rgb, img_size, device, discs=None):
     """
     Returns binary mask (H×W uint8, 255=zone) at original resolution.
+
+    `discs`, if provided (list of (cx,cy,r) from find_discs, called BEFORE
+    segment() so this is available), is used to set a physically-motivated
+    small-fragment removal threshold instead of a flat "0.5% of image area"
+    rule. On dense multi-disc plates a fixed image-area percentage is far
+    too aggressive — it can erase real, small, near-breakpoint zones — so
+    we instead floor at roughly half a disc's own footprint, which is the
+    smallest area a genuine (even tiny) zone annulus can plausibly be.
 
     FIX: The Dryad training masks mark inhibition zones as WHITE (255).
     Inhibition zones appear as DARK clear halos on the plate.
@@ -333,8 +341,13 @@ def segment(model, img_rgb, img_size, device):
     cleaned  = cv2.morphologyEx(raw_mask, cv2.MORPH_OPEN,  kernel, iterations=1)
     cleaned  = cv2.morphologyEx(cleaned,  cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # remove tiny fragments (< 0.5% of image area)
-    min_area = int(h * w * 0.005)
+    # remove tiny fragments — scaled to a real disc's footprint when we know
+    # it, instead of a flat % of the whole image (see docstring above)
+    if discs:
+        median_disc_r = float(np.median([d[2] for d in discs]))
+        min_area = int(0.5 * math.pi * (median_disc_r ** 2))
+    else:
+        min_area = int(h * w * 0.005)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(cleaned)
     filtered = np.zeros_like(cleaned)
     for lbl in range(1, num_labels):
@@ -353,6 +366,65 @@ def pixels_to_mm(zone_radius_px, disc_radius_px):
     return (zone_radius_px * 2) / px_per_mm
 
 
+def measure_zone_radial(mask, cx, cy, disc_r, n_rays=36, max_search_px=None,
+                         min_coverage=0.3, gap_tolerance_px=2, start_tolerance_px=4):
+    """
+    Per-disc zone measurement that is robust to merged/touching zones.
+
+    WHY (v1 bug fixed here): the ray-walk previously had no requirement that
+    the zone begin near the disc. If the pixels right at the disc edge were
+    background, the ray kept walking outward — sometimes 60-80px — until it
+    hit ANY white pixel anywhere along that line (noise speckle, glare, a
+    totally different zone) and started measuring from there. Once latched
+    on, it then kept extending through small gaps. Combined with a smaller
+    fragment-area filter (needed to fix the no-zone-detected problem), this
+    caused predicted diameters to average ~2x the true value (40.8mm vs.
+    21.1mm ground truth), with some readings >85mm — physically impossible
+    on a real plate.
+
+    FIX: a ray must find zone pixels within `start_tolerance_px` of the
+    disc's own edge, or it contributes no measurement at all (a real
+    inhibition zone is contiguous with its disc — there's no legitimate
+    reason for a large background gap between them). `gap_tolerance_px`
+    (small, allows brief mask noise) only applies once the ray has already
+    started inside a genuine, disc-adjacent zone.
+    """
+    h, w = mask.shape
+    if max_search_px is None:
+        max_search_px = int(disc_r * 6)
+
+    hit_radii = []
+    for k in range(n_rays):
+        theta = 2 * math.pi * k / n_rays
+        dx, dy = math.cos(theta), math.sin(theta)
+        last_zone_r, started = None, False
+        for step in range(int(disc_r), max_search_px):
+            x = int(cx + dx * step)
+            y = int(cy + dy * step)
+            if x < 0 or x >= w or y < 0 or y >= h:
+                break
+            on = mask[y, x] > 127
+            if not started:
+                if on:
+                    started, last_zone_r = True, step
+                elif step - disc_r > start_tolerance_px:
+                    break   # zone doesn't start near the disc in this direction
+            else:
+                if on:
+                    last_zone_r = step
+                elif step - last_zone_r > gap_tolerance_px:
+                    break
+
+        if last_zone_r is not None:
+            hit_radii.append(last_zone_r)
+
+    coverage = len(hit_radii) / n_rays
+    if coverage < min_coverage:
+        return None, coverage
+
+    return float(np.median(hit_radii)), coverage
+
+
 def measure_and_annotate(mask, discs, img_rgb, guideline, gray):
     vis = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
@@ -361,7 +433,6 @@ def measure_and_annotate(mask, discs, img_rgb, guideline, gray):
     overlay[mask > 127] = (0, 200, 80)
     vis = cv2.addWeighted(vis, 0.65, overlay, 0.35, 0)
 
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     median_disc_r = float(np.median([d[2] for d in discs])) if discs else 20.0
     results = []
 
@@ -369,21 +440,25 @@ def measure_and_annotate(mask, discs, img_rgb, guideline, gray):
         # OCR the disc label
         label = read_disc_label(gray, cx, cy, disc_r)
 
-        # find nearest zone contour to this disc
-        best_cnt, best_dist = None, 1e9
-        for cnt in cnts:
-            M = cv2.moments(cnt)
-            if M["m00"] == 0: continue
-            d = math.hypot(M["m10"]/M["m00"]-cx, M["m01"]/M["m00"]-cy)
-            if d < best_dist:
-                best_dist, best_cnt = d, cnt
-
         # draw disc
         cv2.circle(vis, (cx,cy), disc_r, (255,255,255), 2)
         cv2.putText(vis, f"D{i+1}", (cx-12, cy+disc_r+16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255,255,255), 1)
 
-        if best_cnt is None or best_dist > disc_r * 7:
+        # geometric safety cap: a disc's zone can't reasonably extend past
+        # ~60% of the distance to its nearest neighboring disc — prevents a
+        # ray from ever claiming a neighbor's territory even if the mask
+        # itself is ambiguous in between
+        other_dists = [math.hypot(cx-ocx, cy-ocy)
+                        for j,(ocx,ocy,_) in enumerate(discs) if j != i]
+        neighbor_cap = 0.6 * min(other_dists) if other_dists else disc_r * 6
+        search_cap   = int(min(disc_r * 6, neighbor_cap))
+
+        # per-disc radial measurement — robust to merged/touching zones
+        er, coverage = measure_zone_radial(mask, cx, cy, disc_r,
+                                            max_search_px=search_cap)
+
+        if er is None:
             zone_mm = DISC_DIAMETER_MM
             sir     = "R"
             col     = SIR_COLOR["R"]
@@ -392,25 +467,25 @@ def measure_and_annotate(mask, discs, img_rgb, guideline, gray):
                         0.52, col, 1)
             results.append({"disc_index":i+1,"antibiotic":label,
                             "zone_diameter_mm":zone_mm,"classification":sir,
-                            "note":"No inhibition zone detected"})
+                            "note":"No inhibition zone detected",
+                            "ray_coverage":round(coverage,2)})
             continue
 
-        (ex,ey), er = cv2.minEnclosingCircle(best_cnt)
-        er      = min(float(er), disc_r * 8.0)
         zone_mm = pixels_to_mm(er, median_disc_r)
         sir     = classify(zone_mm, label, guideline)
         col     = SIR_COLOR[sir]
 
-        cv2.circle(vis, (int(ex),int(ey)), int(er), col, 2)
+        cv2.circle(vis, (cx,cy), int(er), col, 2)
         cv2.putText(vis, f"D{i+1}:{label} {zone_mm:.1f}mm {sir}",
-                    (int(ex)-55, int(ey)-int(er)-6),
+                    (cx-55, cy-int(er)-6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, col, 2)
         cv2.putText(vis, f"D{i+1}:{label} {zone_mm:.1f}mm {sir}",
                     (10, 28+i*26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, col, 1)
 
         results.append({"disc_index":i+1,"antibiotic":label,
                         "zone_diameter_mm":round(zone_mm,2),
-                        "classification":sir})
+                        "classification":sir,
+                        "ray_coverage":round(coverage,2)})
 
     return results, vis
 
@@ -463,10 +538,8 @@ def main(args):
     img_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
     gray    = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2GRAY)
 
-    # segment
-    mask = segment(model, img_rgb, args.img_size, device)
-
-    # find discs
+    # find discs FIRST — segment() uses disc size to set a sane
+    # small-fragment removal threshold instead of a flat image-area %
     discs = find_discs(gray)
     if not discs:
         h, w  = gray.shape
@@ -474,6 +547,9 @@ def main(args):
         print("⚠️  No discs detected — using image centre fallback.")
 
     print(f"Detected {len(discs)} antibiotic disc(s).")
+
+    # segment
+    mask = segment(model, img_rgb, args.img_size, device, discs=discs)
 
     # measure + annotate
     results, vis = measure_and_annotate(mask, discs, img_rgb,

@@ -217,11 +217,13 @@ def main(args):
         img_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2GRAY)
 
-        mask = segment(model, img_rgb, args.img_size, device)
         discs = find_discs(gray)
         # sort left-to-right to match the convention used when ground-truth
         # masks were generated from the docx tables (see module docstring)
         discs = sorted(discs, key=lambda c: c[0])
+        # discs detected BEFORE segment() so the disc-scale-aware fragment
+        # filter inside segment() can use them (see predict.py fix)
+        mask = segment(model, img_rgb, args.img_size, device, discs=discs)
 
         n_gt = len(gt_zone_data)
         n_pred = len(discs)
