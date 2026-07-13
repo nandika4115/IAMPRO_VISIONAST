@@ -213,7 +213,17 @@ def main(args):
         quality_status = "REJECTED" if errors else ("WARNED" if warns else "OK")
 
         # 2. crop, segment, detect discs (same pipeline as predict.py)
-        cropped_bgr, _ = crop_to_plate(img_bgr)
+        if args.skip_crop:
+            # DIAGNOSTIC: training (dataset.py) resizes the FULL raw image
+            # directly with no crop_to_plate() step. Inference normally
+            # crops to the plate first. That mismatch is a likely driver of
+            # the Dice gap between training-time validation (~0.62) and
+            # real inference (~0.32 measured here) — this flag bypasses the
+            # crop so you can test that hypothesis on the existing
+            # checkpoint before deciding whether to retrain anything.
+            cropped_bgr, (ox, oy) = img_bgr, (0, 0)
+        else:
+            cropped_bgr, (ox, oy) = crop_to_plate(img_bgr)
         img_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2GRAY)
 
@@ -267,13 +277,28 @@ def main(args):
             })
 
         # 4. optional pixel-level sanity check against training masks
+        #    NOTE: `mask` is sized to the CROPPED plate region (from
+        #    crop_to_plate), while the ground-truth masks in `masks_dir`
+        #    were generated on the FULL original image. Comparing shapes
+        #    directly silently skipped ~all images before this fix. Fix:
+        #    paste the predicted mask back into a full-size canvas at its
+        #    original crop offset (ox, oy) so both are in the same frame.
         if masks_dir:
             gt_mask_path = masks_dir / f"{img_path.stem}_mask.png"
             if gt_mask_path.exists():
                 gt_mask = cv2.imread(str(gt_mask_path), cv2.IMREAD_GRAYSCALE)
-                if gt_mask is not None and gt_mask.shape == mask.shape:
-                    pm = pixel_metrics(mask, gt_mask)
-                    image_rows[-1].update({f"px_{k}": round(v, 4) for k, v in pm.items()})
+                if gt_mask is not None:
+                    full_h, full_w = img_bgr.shape[:2]
+                    uncropped = np.zeros((full_h, full_w), dtype=np.uint8)
+                    ch, cw = mask.shape[:2]
+                    y2, x2 = min(oy + ch, full_h), min(ox + cw, full_w)
+                    uncropped[oy:y2, ox:x2] = mask[:y2-oy, :x2-ox]
+                    if uncropped.shape == gt_mask.shape:
+                        pm = pixel_metrics(uncropped, gt_mask)
+                        image_rows[-1].update({f"px_{k}": round(v, 4) for k, v in pm.items()})
+                    else:
+                        print(f"⚠️  {sid}: gt_mask shape {gt_mask.shape} still "
+                              f"doesn't match image shape {(full_h, full_w)} — skipping pixel metrics.")
 
     if not disc_rows:
         print("❌  No disc-level comparisons produced — check paths/ids.")
@@ -367,6 +392,9 @@ if __name__ == "__main__":
                     help="Essential Agreement tolerance in mm (CLSI/FDA convention: 3mm)")
     p.add_argument("--test_ids_file", default=None,
                     help="Optional file with one sample id per line, to reuse a fixed test set")
+    p.add_argument("--skip_crop", action="store_true",
+                    help="Diagnostic: bypass crop_to_plate() to test the train/inference "
+                         "preprocessing-mismatch hypothesis (see comment in main loop)")
     args = p.parse_args()
     if args.masks_dir == "":
         args.masks_dir = None
