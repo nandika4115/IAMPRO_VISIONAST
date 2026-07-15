@@ -11,8 +11,9 @@ Usage:
         --zip_masks      data/zip_dataset/masks \
         --epochs         50 \
         --batch_size     4 \
-        --img_size       512 \
+        --img_size       1024 \
         --model_size     small \
+        --norm           group \
         --output_dir     models/
 """
 
@@ -156,7 +157,7 @@ def main(args):
                               shuffle=False, num_workers=use_workers)
 
     # ── model ─────────────────────────────────────────────────────────────
-    model     = build_model(size=args.model_size, device=device)
+    model     = build_model(size=args.model_size, device=device, norm_type=args.norm)
     criterion = BCEDiceLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=1e-4)
@@ -241,12 +242,17 @@ if __name__ == "__main__":
     # training
     parser.add_argument("--epochs",      type=int,   default=50)
     parser.add_argument("--batch_size",  type=int,   default=4)
-    parser.add_argument("--img_size",    type=int,   default=512)
+    parser.add_argument("--img_size",    type=int,   default=1024)
     parser.add_argument("--lr",          type=float, default=1e-4)
     parser.add_argument("--patience",    type=int,   default=10)
     parser.add_argument("--model_size",  choices=["full","small"],
                         default="small",
                         help="small=32 base filters (CPU friendly)")
+    parser.add_argument("--norm", choices=["batch","group"], default="batch",
+                        help="'group' recommended for small batch_size + large "
+                             "img_size (e.g. batch_size=4 @ img_size=1024) — "
+                             "fixes BatchNorm instability seen as noisy/spiky "
+                             "validation curves. Must match at inference time.")
     parser.add_argument("--output_dir",  default="models/")
     args = parser.parse_args()
     main(args)

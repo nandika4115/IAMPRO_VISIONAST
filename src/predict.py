@@ -497,7 +497,7 @@ def measure_and_annotate(mask, discs, img_rgb, guideline, gray):
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = build_model(size=args.model_size, device=device)
+    model = build_model(size=args.model_size, device=device, norm_type=args.norm)
     state = torch.load(args.model_path, map_location=device)
     if isinstance(state, dict) and "model_state" in state:
         state = state["model_state"]
@@ -581,6 +581,8 @@ if __name__ == "__main__":
     parser.add_argument("--image",       required=True)
     parser.add_argument("--output_dir",  default="outputs/")
     parser.add_argument("--model_size",  choices=["full","small"], default="small")
+    parser.add_argument("--norm", choices=["batch","group"], default="batch",
+                        help="MUST match the value used when the checkpoint was trained")
     parser.add_argument("--img_size",    type=int, default=512)
     parser.add_argument("--guideline",   choices=["EUCAST","CLSI"], default="EUCAST")
     args = parser.parse_args()

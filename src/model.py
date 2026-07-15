@@ -20,18 +20,37 @@ import torch.nn.functional as F
 
 # ── building blocks ───────────────────────────────────────────────────────────
 
-class DoubleConv(nn.Module):
-    """Two consecutive Conv2d → BatchNorm → ReLU blocks."""
+def _make_norm(norm_type: str, num_channels: int) -> nn.Module:
+    """
+    'batch' : nn.BatchNorm2d — original default. Needs a reasonably large
+              batch size for stable running statistics; with batch_size=4
+              at img_size=1024 this is a likely source of the noisy,
+              spiky validation curves observed during training.
+    'group' : nn.GroupNorm — computed per-sample, independent of batch
+              size, so it doesn't have that instability. Standard choice
+              for small-batch, large-image segmentation (e.g. nnU-Net
+              uses InstanceNorm for the same reason). Recommended for
+              img_size=1024 / batch_size=4 training.
+    """
+    if norm_type == "group":
+        num_groups = min(8, num_channels)  # 8 groups, or fewer if channels < 8
+        return nn.GroupNorm(num_groups, num_channels)
+    return nn.BatchNorm2d(num_channels)
 
-    def __init__(self, in_ch: int, out_ch: int, mid_ch: int = None):
+
+class DoubleConv(nn.Module):
+    """Two consecutive Conv2d → Norm → ReLU blocks."""
+
+    def __init__(self, in_ch: int, out_ch: int, mid_ch: int = None,
+                 norm_type: str = "batch"):
         super().__init__()
         mid_ch = mid_ch or out_ch
         self.block = nn.Sequential(
             nn.Conv2d(in_ch,  mid_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(mid_ch),
+            _make_norm(norm_type, mid_ch),
             nn.ReLU(inplace=True),
             nn.Conv2d(mid_ch, out_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
+            _make_norm(norm_type, out_ch),
             nn.ReLU(inplace=True),
         )
 
@@ -42,11 +61,11 @@ class DoubleConv(nn.Module):
 class Down(nn.Module):
     """MaxPool → DoubleConv (encoder step)."""
 
-    def __init__(self, in_ch: int, out_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, norm_type: str = "batch"):
         super().__init__()
         self.pool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_ch, out_ch),
+            DoubleConv(in_ch, out_ch, norm_type=norm_type),
         )
 
     def forward(self, x):
@@ -56,11 +75,11 @@ class Down(nn.Module):
 class Up(nn.Module):
     """Bilinear up-sample → concat skip → DoubleConv (decoder step)."""
 
-    def __init__(self, in_ch: int, out_ch: int):
+    def __init__(self, in_ch: int, out_ch: int, norm_type: str = "batch"):
         super().__init__()
         self.up   = nn.Upsample(scale_factor=2, mode="bilinear",
                                 align_corners=True)
-        self.conv = DoubleConv(in_ch, out_ch, in_ch // 2)
+        self.conv = DoubleConv(in_ch, out_ch, in_ch // 2, norm_type=norm_type)
 
     def forward(self, x, skip):
         x = self.up(x)
@@ -95,20 +114,20 @@ class UNet(nn.Module):
     """
 
     def __init__(self, in_channels: int = 3, num_classes: int = 2,
-                 base_filters: int = 64):
+                 base_filters: int = 64, norm_type: str = "batch"):
         super().__init__()
         f = base_filters
 
-        self.inc   = DoubleConv(in_channels, f)
-        self.down1 = Down(f,    f*2)
-        self.down2 = Down(f*2,  f*4)
-        self.down3 = Down(f*4,  f*8)
-        self.down4 = Down(f*8,  f*16)
+        self.inc   = DoubleConv(in_channels, f, norm_type=norm_type)
+        self.down1 = Down(f,    f*2,  norm_type=norm_type)
+        self.down2 = Down(f*2,  f*4,  norm_type=norm_type)
+        self.down3 = Down(f*4,  f*8,  norm_type=norm_type)
+        self.down4 = Down(f*8,  f*16, norm_type=norm_type)
 
-        self.up1   = Up(f*16 + f*8,  f*8)
-        self.up2   = Up(f*8  + f*4,  f*4)
-        self.up3   = Up(f*4  + f*2,  f*2)
-        self.up4   = Up(f*2  + f,    f)
+        self.up1   = Up(f*16 + f*8,  f*8, norm_type=norm_type)
+        self.up2   = Up(f*8  + f*4,  f*4, norm_type=norm_type)
+        self.up3   = Up(f*4  + f*2,  f*2, norm_type=norm_type)
+        self.up4   = Up(f*2  + f,    f,   norm_type=norm_type)
         self.outc  = OutConv(f, num_classes)
 
     def forward(self, x):
@@ -129,24 +148,36 @@ class UNet(nn.Module):
 
 class UNetSmall(UNet):
     """Same architecture with base_filters=32 for CPU training."""
-    def __init__(self, in_channels=3, num_classes=2):
-        super().__init__(in_channels, num_classes, base_filters=32)
+    def __init__(self, in_channels=3, num_classes=2, norm_type: str = "batch"):
+        super().__init__(in_channels, num_classes, base_filters=32, norm_type=norm_type)
 
 
 # ── factory ───────────────────────────────────────────────────────────────────
 
 def build_model(size: str = "full", num_classes: int = 2,
-                device: str = "cpu") -> nn.Module:
+                device: str = "cpu", norm_type: str = "batch") -> nn.Module:
     """
-    size : 'full'  → UNet(base_filters=64)   ~31M params
-           'small' → UNet(base_filters=32)   ~8M  params  (recommended for CPU)
+    size      : 'full'  → UNet(base_filters=64)   ~31M params
+                'small' → UNet(base_filters=32)   ~8M  params  (recommended for CPU)
+    norm_type : 'batch' → nn.BatchNorm2d (original default; backward-compatible
+                           with checkpoints trained before this option existed)
+                'group' → nn.GroupNorm (recommended for small batch_size + large
+                           img_size, e.g. batch_size=4 @ img_size=1024 — see
+                           _make_norm() docstring)
+
+    IMPORTANT: norm_type changes the model's parameter names/shapes.
+    A checkpoint trained with norm_type='batch' will NOT load into a
+    norm_type='group' model and vice versa — always pass the SAME
+    --norm value at train time and at inference/eval time for a given
+    checkpoint.
     """
     if size == "small":
-        model = UNetSmall(num_classes=num_classes)
+        model = UNetSmall(num_classes=num_classes, norm_type=norm_type)
     else:
-        model = UNet(num_classes=num_classes)
+        model = UNet(num_classes=num_classes, norm_type=norm_type)
 
     model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model: UNet-{size}  |  Parameters: {n_params:,}  |  Device: {device}")
+    print(f"Model: UNet-{size}  |  Norm: {norm_type}  |  "
+          f"Parameters: {n_params:,}  |  Device: {device}")
     return model

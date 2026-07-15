@@ -164,7 +164,7 @@ def pixel_metrics(pred_mask_bin: np.ndarray, gt_mask_bin: np.ndarray):
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = build_model(size=args.model_size, device=device)
+    model = build_model(size=args.model_size, device=device, norm_type=args.norm)
     state = torch.load(args.model_path, map_location=device)
     if isinstance(state, dict) and "model_state" in state:
         state = state["model_state"]
@@ -379,6 +379,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Quantitative validation for VisionAST")
     p.add_argument("--model_path", required=True)
     p.add_argument("--model_size", choices=["full", "small"], default="small")
+    p.add_argument("--norm", choices=["batch","group"], default="batch",
+                    help="MUST match the value used when the checkpoint was trained")
     p.add_argument("--img_size", type=int, default=512)
     p.add_argument("--guideline", choices=["EUCAST"], default="EUCAST")
     p.add_argument("--images_dir", default="data/dryad/images_original")
